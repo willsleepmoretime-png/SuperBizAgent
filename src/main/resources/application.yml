@@ -1,0 +1,92 @@
+server:
+  port: 9900
+  servlet:
+    encoding:
+      charset: UTF-8
+      enabled: true
+      force: true
+
+file:
+  upload:
+    path: ./uploads
+    allowed-extensions: txt,md
+
+milvus:
+  host: localhost
+  port: 19530
+  username: ""
+  password: ""
+  database: default
+  timeout: 10000
+
+# Spring AI Alibaba DashScope 配置
+spring:
+  ai:
+    dashscope:
+      api-key: ${DASHSCOPE_API_KEY:}  # 从环境变量读取
+      chat:
+        options:
+          timeout: 180000  # 超时时间180秒（3分钟）
+      retry:
+        max-attempts: 3  # 最大重试次数
+        backoff:
+          initial-interval: 2000  # 初始重试间隔2秒
+          multiplier: 2  # 重试间隔倍数
+          max-interval: 10000  # 最大重试间隔10秒
+    
+    # Spring AI MCP 客户端配置
+    # 如果使用mock数据，请注释这部分内容
+    mcp:
+      client:
+        enabled: false
+        name: tencent-mcp-server
+        version: 1.0.0
+        request-timeout: 60s
+        type: ASYNC
+        sse:
+          connections:
+            tencent-cls:
+              url: https://localhost:3000
+              sse-endpoint: /sse  # 完整的SSE端点路径
+
+# 阿里云 DashScope Embedding API 配置
+dashscope:
+  api:
+    key: ${DASHSCOPE_API_KEY:}   # 从环境变量读取（用于自定义配置）
+  embedding:
+    model: text-embedding-v4  # 阿里云文本向量化模型
+
+# 文档分片配置
+document:
+  chunk:
+    max-size: 800  # 每个分片最大字符数
+    overlap: 100   # 分片之间的重叠字符数
+
+# RAG 配置
+rag:
+  # RAG_OPTIMIZATION: top-k 是最终进入 Prompt 的文档数量，不等于 Milvus 初始召回数量。
+  # 建议 top-k 保持 3~5，candidate-k 可调到 12~30，再通过 rerank 筛出高质量上下文。
+  top-k: 3  # 检索返回的最相似文档数量
+  candidate-k: 24  # Milvus 候选召回数量，用于过滤/重排
+  max-distance: 0  # L2 距离阈值，0 表示不启用过滤
+  model: "qwen3-max"  # 大语言模型名称
+  rerank:
+    enabled: true
+    model: "gte-rerank-v2"
+    return-documents: true
+
+# Prometheus 配置
+prometheus:
+  base-url: http://localhost:9090
+  timeout: 10  # 超时时间（秒）
+  mock-enabled: true # 是否启用 Mock 模式（用于测试）
+
+# 对话记忆配置
+chat:
+  memory:
+    max-window-size: 6  # 最近原文对话窗口，按“用户消息 + AI 回复”为一轮
+    summary-max-chars: 3000  # 滚动摘要最大字符数，超过后保留最近内容
+
+# CLS 云日志服务配置 
+cls:
+  mock-enabled: true  # 是否启用 Mock 模式（用于测试，设为 true 返回与告警关联的模拟日志数据）
