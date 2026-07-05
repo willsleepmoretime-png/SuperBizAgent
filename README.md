@@ -1,115 +1,82 @@
 # SuperBizAgent
 
-SuperBizAgent is an enterprise AIOps Agent demo built with Spring Boot, Spring AI Alibaba, DashScope, Milvus, and RAG. It turns alert investigation into an agent workflow: alert understanding, internal knowledge retrieval, log/metric querying, root-cause analysis, and remediation report generation.
+SuperBizAgent 是一个基于 Spring Boot、Spring AI Alibaba、DashScope、Milvus 和 RAG 构建的企业级智能排障 Agent 项目。
 
-中文简介：这是一个企业级智能排障 Agent 项目，用于演示如何把 Prometheus 告警、日志查询、内部文档知识库和多 Agent 编排组合成自动化排障流程。
+项目目标不是做一个简单聊天机器人，而是把企业运维排障中的 **告警查询、日志分析、内部知识库检索、根因分析、修复建议生成** 串联成一个可自动执行的 Agent 流程。
 
-## Features
+## 项目背景
 
-- RAG knowledge base: upload Markdown/text documents, chunk them, embed them with DashScope `text-embedding-v4`, and store vectors in Milvus.
-- Semantic reranking: retrieve candidates from Milvus, then rerank with DashScope `gte-rerank-v2`; fallback to local lightweight rerank when the model call fails.
-- AIOps multi-agent workflow: use Supervisor, Planner/Replanner, and Executor agents to run a plan-execute-replan troubleshooting loop.
-- Tool calling: internal docs search, Prometheus alert querying, log querying, and datetime tools.
-- Tool router: route user questions to relevant tools only, reducing unnecessary tool calls and prompt cost.
-- Conversation memory: keep recent turns and summarized long-term context.
-- SSE streaming: stream normal chat and AIOps reports to the frontend.
-- Debug endpoints: compare baseline vector retrieval with optimized query expansion + rerank results.
+传统监控系统通常只能告诉我们“哪里出问题了”，例如 CPU 使用率过高、JVM 内存异常、服务 P99 响应时间过长、接口 5xx 错误增多。但真正排障时，工程师还需要手动切换 Prometheus、日志平台和内部文档，结合经验判断根因。
 
-## Architecture
+SuperBizAgent 尝试将这套流程 Agent 化，让系统能够自动完成：
 
-```mermaid
-flowchart TD
-    User["User / Frontend"] --> ChatController["ChatController"]
-    ChatController --> ChatService["ChatService"]
-    ChatController --> AiOpsService["AiOpsService"]
-    ChatService --> ReactAgent["ReactAgent Chat"]
-    ReactAgent --> ToolRouter["Tool Router"]
-    ToolRouter --> DateTool["DateTime Tool"]
-    ToolRouter --> DocsTool["Internal Docs Tool"]
-    ToolRouter --> MetricsTool["Prometheus Alerts Tool"]
-    ToolRouter --> LogsTool["Logs Tool / MCP"]
-    DocsTool --> VectorSearch["VectorSearchService"]
-    VectorSearch --> Embedding["DashScope text-embedding-v4"]
-    VectorSearch --> Milvus["Milvus"]
-    VectorSearch --> Rerank["DashScope gte-rerank-v2"]
-    VectorSearch --> Fallback["Local Rerank Fallback"]
-    AiOpsService --> Supervisor["Supervisor Agent"]
-    Supervisor --> Planner["Planner / Replanner Agent"]
-    Supervisor --> Executor["Executor Agent"]
-    Planner --> DocsTool
-    Planner --> MetricsTool
-    Executor --> LogsTool
-    Executor --> MetricsTool
+```text
+告警理解 -> 知识库检索 -> 日志/指标查询 -> 根因分析 -> 修复建议 -> 告警分析报告
 ```
 
-## Tech Stack
+## 核心能力
 
-| Area | Technology |
+- RAG 知识库问答：支持上传 Markdown / TXT 文档，自动分片、向量化并写入 Milvus。
+- 独立重排模型：Milvus 粗召回后接入 DashScope `gte-rerank-v2` 进行语义精排。
+- Rerank 失败兜底：重排模型不可用时，自动降级为本地轻量重排策略。
+- 多 Agent 排障：基于 Supervisor、Planner/Replanner、Executor 实现 Plan-Execute-Replan 闭环。
+- 工具调用：支持内部文档检索、Prometheus 告警查询、日志查询、时间工具等。
+- 工具 Router：根据用户意图只挂载相关工具，减少无效工具调用和 token 消耗。
+- 会话记忆：保留最近对话窗口，并对较早历史进行摘要压缩。
+- SSE 流式输出：普通问答和 AIOps 报告均支持流式返回。
+- RAG 调试接口：支持对比 baseline 向量检索与 query expansion + rerank 后的检索结果。
+
+
+## 技术栈
+
+| 模块 | 技术 |
 | --- | --- |
-| Language | Java 17 |
-| Backend | Spring Boot 3.2.0 |
-| Agent framework | Spring AI Alibaba Agent Framework |
-| LLM provider | Alibaba Cloud DashScope |
-| Embedding model | `text-embedding-v4` |
-| Rerank model | `gte-rerank-v2` |
-| Vector database | Milvus 2.6.10 |
-| Streaming | Server-Sent Events with `SseEmitter` |
-| Build tool | Maven |
+| 开发语言 | Java 17 |
+| 后端框架 | Spring Boot 3.2.0 |
+| Agent 框架 | Spring AI Alibaba Agent Framework |
+| 大模型服务 | Alibaba Cloud DashScope |
+| 向量化模型 | `text-embedding-v4` |
+| 重排模型 | `gte-rerank-v2` |
+| 向量数据库 | Milvus 2.6.10 |
+| 流式输出 | Server-Sent Events / `SseEmitter` |
+| 构建工具 | Maven |
 
-## Core Modules
+## 核心模块
 
-```text
-src/main/java/org/example
-├── Main.java
-├── agent/tool
-│   ├── DateTimeTools.java          # Datetime tool
-│   ├── InternalDocsTools.java      # RAG internal documentation tool
-│   ├── QueryLogsTools.java         # CLS/mock log query tool
-│   └── QueryMetricsTools.java      # Prometheus alert query tool
-├── config
-│   ├── RagProperties.java          # RAG and rerank configuration
-│   ├── MilvusConfig.java
-│   └── DocumentChunkConfig.java
-├── controller
-│   ├── ChatController.java         # Chat, streaming, AIOps APIs
-│   ├── FileUploadController.java   # Document upload and indexing
-│   └── RagDebugController.java     # RAG search/compare debug APIs
-└── service
-    ├── AiOpsService.java           # Supervisor/Planner/Executor workflow
-    ├── ChatService.java            # ReactAgent, tool router, memory
-    ├── DocumentChunkService.java   # Markdown/paragraph chunking
-    ├── VectorEmbeddingService.java # DashScope embedding
-    ├── VectorIndexService.java     # File indexing into Milvus
-    ├── VectorSearchService.java    # Query expansion, retrieval, rerank
-    ├── RerankService.java
-    └── DashScopeRerankService.java
-```
 
-## RAG Pipeline
 
-### Indexing
+## RAG 链路设计
+
+### 文档入库流程
 
 ```text
-Upload .txt/.md file
--> FileUploadController saves the file
--> VectorIndexService reads content
--> DocumentChunkService chunks by Markdown headings and paragraphs
--> VectorEmbeddingService calls DashScope text-embedding-v4
--> VectorIndexService writes vectors and metadata into Milvus
+上传 .txt / .md 文件
+-> FileUploadController 保存文件
+-> VectorIndexService 读取文件内容
+-> DocumentChunkService 按 Markdown 标题和段落分片
+-> VectorEmbeddingService 调用 DashScope text-embedding-v4
+-> VectorIndexService 写入 Milvus
 ```
 
-### Retrieval
+分片策略：
+
+- 优先按 Markdown 标题切分，保留文档结构。
+- 对长章节继续按段落切分，避免破坏语义。
+- 在 chunk 内容中补充标题上下文，例如 `标题: CPU 使用率过高排查`。
+- 使用 overlap 缓解跨 chunk 信息断裂。
+
+### 检索流程
 
 ```text
-User / Agent query
--> Lightweight query expansion for AIOps terms
--> Milvus recalls candidate-k documents
--> DashScope gte-rerank-v2 reranks candidates
--> Fallback to local rerank if model rerank fails
--> Top-K chunks are returned to the Agent
+用户问题 / Agent 工具调用
+-> 运维关键词 query expansion
+-> Milvus 召回 candidate-k 个候选 chunk
+-> DashScope gte-rerank-v2 语义重排
+-> 取 top-k 个高相关 chunk
+-> 返回给 Agent 生成最终回答
 ```
 
-Current default configuration:
+默认配置：
 
 ```yaml
 rag:
@@ -122,189 +89,48 @@ rag:
     return-documents: true
 ```
 
-Local fallback rerank combines vector similarity, content keyword hits, and metadata keyword hits:
+如果 `gte-rerank-v2` 调用失败、超时或返回为空，系统会自动降级到本地轻量重排：
 
 ```text
 rerankScore = vectorScore + contentHits * 0.08 + metadataHits * 0.15
 vectorScore = 1 / (1 + L2 distance)
 ```
 
-## AIOps Agent Workflow
+## AIOps 多 Agent 设计
 
-The AIOps workflow is implemented in `AiOpsService` with three roles:
+AIOps 排障流程由 `AiOpsService` 负责，核心是三个角色：
 
-- Supervisor Agent: controls whether to call Planner, Executor, or finish.
-- Planner/Replanner Agent: decomposes alert investigation tasks and adjusts the plan based on execution feedback.
-- Executor Agent: executes one step at a time, calls tools, and returns structured evidence.
+| Agent | 职责 |
+| --- | --- |
+| Supervisor Agent | 控制流程，决定调用 Planner、Executor 或结束 |
+| Planner / Replanner Agent | 拆解告警任务，根据执行反馈动态调整计划 |
+| Executor Agent | 执行 Planner 给出的第一步，调用工具并返回证据 |
 
-Workflow:
+执行流程：
 
 ```text
 POST /api/ai_ops
--> Supervisor starts orchestration
--> Planner creates the troubleshooting plan
--> Executor runs the first step and collects evidence
--> Planner replans based on evidence
--> Repeat until FINISH
--> Generate a Markdown alert analysis report
+-> Supervisor 启动编排
+-> Planner 分析告警并制定排障计划
+-> Executor 执行第一步工具调用
+-> Planner 根据工具结果重新规划
+-> 多轮迭代直到 FINISH
+-> 输出 Markdown 告警分析报告
 ```
 
-The prompts explicitly require the agents to avoid hallucination: if a tool repeatedly fails or returns no data, the final report must explain what could not be completed instead of inventing evidence.
+为了减少 Agent 幻觉，Prompt 中明确要求所有结论必须基于工具返回结果。工具失败或返回空时，需要记录失败原因；同一方向连续失败时，必须停止并在最终报告中说明无法完成的原因，禁止编造未查询到的日志、指标或根因。
 
-## API Overview
+## 工具 Router
 
-### Chat
+项目根据用户问题进行工具路由，避免所有问题都挂载全部工具。
 
-```http
-POST /api/chat
-Content-Type: application/json
+| 路由 | 场景 | 工具 |
+| --- | --- | --- |
+| `CHAT_ONLY` | 普通聊天 | 不挂载运维工具 |
+| `DATETIME` | 时间日期问题 | 时间工具 |
+| `DOCS_RAG` | 文档、流程、SOP、排障方案 | 内部文档工具 |
+| `OBSERVABILITY` | 告警、指标、日志 | Prometheus / 日志工具 |
+| `AIOPS_PARTIAL` | 文档 + 告警或日志 | 部分排障工具 |
+| `AIOPS_FULL` | 文档 + 指标 + 日志 | 完整排障工具 |
 
-{
-  "Id": "session-001",
-  "Question": "How should I troubleshoot high CPU usage?"
-}
-```
-
-### Streaming Chat
-
-```http
-POST /api/chat_stream
-Content-Type: application/json
-
-{
-  "Id": "session-001",
-  "Question": "Query the knowledge base for memory leak troubleshooting."
-}
-```
-
-### AIOps Report
-
-```http
-POST /api/ai_ops
-```
-
-### Upload Knowledge Documents
-
-```bash
-curl -X POST http://localhost:9900/api/upload \
-  -F "file=@aiops-docs/cpu_high_usage.md"
-```
-
-### RAG Debug
-
-```http
-GET /api/rag/debug/search?query=HighCPUUsage
-GET /api/rag/debug/compare?query=HighCPUUsage
-```
-
-## Quick Start
-
-### Prerequisites
-
-- JDK 17+
-- Maven 3.8+
-- Docker and Docker Compose
-- DashScope API key
-
-### Configure Environment Variables
-
-Windows PowerShell:
-
-```powershell
-$env:DASHSCOPE_API_KEY="your-dashscope-api-key"
-```
-
-Linux/macOS:
-
-```bash
-export DASHSCOPE_API_KEY="your-dashscope-api-key"
-```
-
-### Start Milvus
-
-```bash
-docker compose -f vector-database.yml up -d
-```
-
-### Build and Run
-
-```bash
-mvn clean package -DskipTests
-mvn spring-boot:run
-```
-
-The application starts on:
-
-```text
-http://localhost:9900
-```
-
-### Optional: One-Command Bootstrap
-
-If your environment has `make`:
-
-```bash
-make init
-```
-
-## Configuration
-
-Main configuration file:
-
-```text
-src/main/resources/application.yml
-```
-
-Important settings:
-
-```yaml
-spring:
-  ai:
-    dashscope:
-      api-key: ${DASHSCOPE_API_KEY:}
-
-dashscope:
-  api:
-    key: ${DASHSCOPE_API_KEY:}
-  embedding:
-    model: text-embedding-v4
-
-milvus:
-  host: localhost
-  port: 19530
-
-prometheus:
-  base-url: http://localhost:9090
-  mock-enabled: true
-
-cls:
-  mock-enabled: true
-```
-
-## Interview Highlights
-
-If you use this project in a resume or interview, the strongest talking points are:
-
-1. Milvus is used for coarse candidate recall, while DashScope `gte-rerank-v2` performs semantic reranking.
-2. The RAG chain has a fallback path, so rerank service failure does not break knowledge retrieval.
-3. The AIOps workflow uses Supervisor, Planner, and Executor agents instead of a single uncontrolled agent.
-4. Tool Router reduces irrelevant tool calls and token usage.
-5. Prompts and tool feedback are designed to reduce hallucination: failed tools must be reported, not hidden.
-6. `/api/rag/debug/compare` helps compare baseline retrieval with optimized query expansion + rerank retrieval.
-
-## Known Limitations
-
-- The current log tool mainly uses mock data unless connected through MCP or a real CLS implementation.
-- RAG quality evaluation currently depends on debug endpoints; a labeled evaluation set would make it more rigorous.
-- File upload and indexing are synchronous; production usage should use asynchronous indexing and expose indexing status.
-- Tool routing is keyword-based for explainability and low latency; an intent classifier could improve generalization.
-
-## Security Notes
-
-Do not commit real API keys. Configure DashScope through the `DASHSCOPE_API_KEY` environment variable.
-
-If a real key was committed before, rotate it immediately in the DashScope console.
-
-## License
-
-This project is licensed under the Apache License 2.0. See [LICENSE](LICENSE).
+这样可以减少无效工具调用，降低 token 消耗，并提升 Agent 执行稳定性。
