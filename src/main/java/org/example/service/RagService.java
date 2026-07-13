@@ -40,6 +40,9 @@ public class RagService {
     @Autowired
     private RagProperties ragProperties;
 
+    @Autowired
+    private RagPromptBuilder ragPromptBuilder;
+
     @Value("${dashscope.api.key}")
     private String apiKey;
 
@@ -98,10 +101,9 @@ public class RagService {
             }
 
             // 2. 构建上下文和提示词
-            String context = buildContext(searchResults);
-            String prompt = buildPrompt(question, context);
+            RagPromptBuilder.RagPrompt prompt = ragPromptBuilder.build(question, searchResults);
             logger.info("PERF rag.prompt contextLength={} promptLength={} historyPairs={}",
-                    context.length(), prompt.length(), history.size() / 2);
+                    prompt.context().length(), prompt.userPrompt().length(), history.size() / 2);
 
             // 3. 流式调用大语言模型（传入历史消息）
             generateAnswerStream(prompt, history, callback);
@@ -115,123 +117,24 @@ public class RagService {
     }
 
     /**
-     * 构建上下文
-     */
-    private String buildContext(List<VectorSearchService.SearchResult> searchResults) {
-        StringBuilder context = new StringBuilder();
-        
-        for (int i = 0; i < searchResults.size(); i++) {
-            VectorSearchService.SearchResult result = searchResults.get(i);
-            // RAG_OPTIMIZATION: 给每个上下文片段补充来源和检索分数，便于模型引用，也便于排查 RAG 命中质量。
-            context.append("【参考资料 ").append(i + 1).append("】\n");
-            context.append("来源: ").append(buildSourceLabel(result)).append("\n");
-            context.append("向量距离: ").append(result.getScore())
-                    .append("，重排分: ").append(result.getRerankScore())
-                    .append("，命中查询: ").append(result.getMatchedQuery() == null ? "" : result.getMatchedQuery())
-                    .append("\n");
-            context.append(result.getContent()).append("\n\n");
-        }
-        
-        return context.toString();
-    }
-
-    /**
-     * 构建提示词
-     */
-    private String buildPrompt(String question, String context) {
-        // RAG_OPTIMIZATION: 要求模型基于参考资料回答并给出引用，降低无依据生成。
-        return String.format(
-            "你是一个专业的AI助手。请根据以下参考资料回答用户的问题。\n\n" +
-            "参考资料：\n%s\n" +
-            "用户问题：%s\n\n" +
-            "回答要求：\n" +
-            "1. 只基于上述参考资料回答，不要编造资料中没有的信息。\n" +
-            "2. 如果参考资料不足以回答，请明确说明知识库没有找到明确依据。\n" +
-            "3. 关键结论后请标注引用来源，例如：参考资料 1。\n" +
-            "4. 如果多个参考资料互相补充，请合并成结构化答案。",
-            context, question
-        );
-    }
-
-    private String buildSourceLabel(VectorSearchService.SearchResult result) {
-        String metadata = result.getMetadata();
-        if (metadata == null || metadata.isBlank()) {
-            return "未知来源";
-        }
-
-        String source = extractJsonLikeValue(metadata, "_source");
-        String fileName = extractJsonLikeValue(metadata, "_file_name");
-        String title = extractJsonLikeValue(metadata, "title");
-        String chunkIndex = extractJsonLikeValue(metadata, "chunkIndex");
-
-        StringBuilder label = new StringBuilder();
-        if (!fileName.isBlank()) {
-            label.append(fileName);
-        } else if (!source.isBlank()) {
-            label.append(source);
-        } else {
-            label.append("未知文件");
-        }
-
-        if (!title.isBlank()) {
-            label.append(" / ").append(title);
-        }
-        if (!chunkIndex.isBlank()) {
-            label.append(" / chunk ").append(chunkIndex);
-        }
-        return label.toString();
-    }
-
-    /**
-     * RAG_OPTIMIZATION: Milvus SDK 返回的 JSON metadata 在这里仅用于展示引用来源，
-     * 所以用轻量解析避免引入额外反序列化依赖。
-     */
-    private String extractJsonLikeValue(String metadata, String key) {
-        String quotedKey = "\"" + key + "\"";
-        int keyIndex = metadata.indexOf(quotedKey);
-        if (keyIndex < 0) {
-            return "";
-        }
-
-        int colonIndex = metadata.indexOf(':', keyIndex + quotedKey.length());
-        if (colonIndex < 0) {
-            return "";
-        }
-
-        int valueStart = colonIndex + 1;
-        while (valueStart < metadata.length() && Character.isWhitespace(metadata.charAt(valueStart))) {
-            valueStart++;
-        }
-
-        if (valueStart >= metadata.length()) {
-            return "";
-        }
-
-        if (metadata.charAt(valueStart) == '"') {
-            int valueEnd = metadata.indexOf('"', valueStart + 1);
-            return valueEnd > valueStart ? metadata.substring(valueStart + 1, valueEnd) : "";
-        }
-
-        int valueEnd = valueStart;
-        while (valueEnd < metadata.length() && metadata.charAt(valueEnd) != ',' && metadata.charAt(valueEnd) != '}') {
-            valueEnd++;
-        }
-        return metadata.substring(valueStart, valueEnd).trim();
-    }
-
-    /**
      * 生成答案（流式）
      * 
      * @param prompt 当前问题的提示词
      * @param history 历史消息列表
      * @param callback 流式回调接口
      */
-    private void generateAnswerStream(String prompt, List<Map<String, String>> history, StreamCallback callback) 
+    private void generateAnswerStream(RagPromptBuilder.RagPrompt prompt,
+                                      List<Map<String, String>> history, StreamCallback callback)
             throws NoApiKeyException, ApiException, InputRequiredException {
         long llmStartNs = System.nanoTime();
         
         // 构建消息列表：历史消息 + 当前问题
         List<Message> messages = new ArrayList<>();
+
+        messages.add(Message.builder()
+                .role(Role.SYSTEM.getValue())
+                .content(prompt.systemPrompt())
+                .build());
         
         // 添加历史消息
         for (Map<String, String> historyMsg : history) {
@@ -254,7 +157,7 @@ public class RagService {
         // 添加当前用户问题
         Message userMsg = Message.builder()
                 .role(Role.USER.getValue())
-                .content(prompt)
+                .content(prompt.userPrompt())
                 .build();
         messages.add(userMsg);
         
@@ -272,7 +175,7 @@ public class RagService {
         logger.info("开始调用AI模型流式接口...");
         
         logger.info("PERF rag.llm.request model={} messageCount={} promptLength={}",
-                ragProperties.getModel(), messages.size(), prompt.length());
+                ragProperties.getModel(), messages.size(), prompt.userPrompt().length());
         Flowable<GenerationResult> result = generation.streamCall(param);
         
         StringBuilder reasoningContent = new StringBuilder();

@@ -52,6 +52,7 @@ public class VectorSearchService {
      * @param topK 返回最相似的K个结果
      * @return 搜索结果列表
      */
+
     public List<SearchResult> searchSimilarDocuments(String query, int topK) {
         long searchStartNs = System.nanoTime();
         try {
@@ -127,6 +128,33 @@ public class VectorSearchService {
                 .filter(this::matchesDistanceThreshold)
                 .limit(finalTopK)
                 .toList();
+    }
+
+    /**
+     * RAG_EVAL: 评测用检索入口，保留 query expansion 和多路召回，但强制使用本地轻量重排。
+     * 用于和 baseline、模型 rerank 后的 optimized 结果做效果对比。
+     */
+    public List<SearchResult> searchSimilarDocumentsWithLocalRerank(String query, int topK) {
+        int finalTopK = topK > 0 ? topK : ragProperties.getTopK();
+        int candidateK = Math.max(finalTopK, ragProperties.getCandidateK());
+        List<String> queryVariants = buildQueryVariants(query);
+        Map<String, SearchResult> deduplicatedResults = new LinkedHashMap<>();
+
+        for (String queryVariant : queryVariants) {
+            List<SearchResult> variantResults = searchSingleQuery(queryVariant, candidateK);
+            for (SearchResult result : variantResults) {
+                SearchResult existing = deduplicatedResults.get(result.getId());
+                if (existing == null || result.getScore() < existing.getScore()) {
+                    result.setMatchedQuery(queryVariant);
+                    deduplicatedResults.put(result.getId(), result);
+                }
+            }
+        }
+
+        List<SearchResult> candidates = deduplicatedResults.values().stream()
+                .filter(this::matchesDistanceThreshold)
+                .toList();
+        return lightweightRerank(query, candidates, finalTopK);
     }
 
     private List<SearchResult> searchSingleQuery(String query, int candidateK) {
@@ -369,6 +397,14 @@ public class VectorSearchService {
         private String matchedQuery;
         private String confidenceLevel;
         private String qualityReason;
+        private Integer denseRank;
+        private Float denseDistance;
+        private Integer bm25Rank;
+        private Float bm25Score;
+        private Double rrfScore;
+        private Integer rerankRank;
+        private Boolean rerankFallback;
+        private Boolean rerankProtected;
 
     }
 }

@@ -3,6 +3,7 @@ class SuperBizAgentApp {
     constructor() {
         this.apiBaseUrl = 'http://localhost:9900/api';
         this.currentMode = 'quick'; // 'quick' 或 'stream'
+        this.userId = this.loadOrCreateUserId();
         this.sessionId = this.generateSessionId();
         this.isStreaming = false;
         this.currentChatHistory = []; // 当前对话的消息历史
@@ -549,6 +550,18 @@ class SuperBizAgentApp {
         return 'session_' + Math.random().toString(36).substr(2, 9) + '_' + Date.now();
     }
 
+    // 演示版没有登录系统，先为当前浏览器保存稳定 userId。
+    // 接入认证后应由服务端登录身份提供，不能继续信任请求体中的 userId。
+    loadOrCreateUserId() {
+        const storageKey = 'superBizAgentUserId';
+        let userId = localStorage.getItem(storageKey);
+        if (!userId) {
+            userId = 'user_' + Math.random().toString(36).substr(2, 12);
+            localStorage.setItem(storageKey, userId);
+        }
+        return userId;
+    }
+
     // 发送消息
     async sendMessage() {
         let message = '';
@@ -612,7 +625,8 @@ class SuperBizAgentApp {
                 },
                 body: JSON.stringify({
                     Id: this.sessionId,
-                    Question: message
+                    Question: message,
+                    userId: this.userId
                 })
             });
 
@@ -636,7 +650,15 @@ class SuperBizAgentApp {
                 if (chatResponse && chatResponse.success) {
                     // 成功：添加实际响应消息（即使 answer 为空也显示）
                     const answer = chatResponse.answer || '（无回复内容）';
-                    this.addMessage('assistant', answer);
+                    const messageElement = this.addMessage('assistant', answer);
+                    if (chatResponse.usage) {
+                        chatResponse.usage.contextUsage = chatResponse.contextUsage || null;
+                        this.renderUsagePanel(messageElement, chatResponse.usage);
+                    } else if (chatResponse.contextUsage) {
+                        const summary = this.createUsageSummary();
+                        summary.contextUsage = chatResponse.contextUsage;
+                        this.renderUsagePanel(messageElement, summary);
+                    }
                 } else if (chatResponse && chatResponse.errorMessage) {
                     // 业务错误
                     throw new Error(chatResponse.errorMessage);
@@ -668,7 +690,8 @@ class SuperBizAgentApp {
                 },
                 body: JSON.stringify({
                     Id: this.sessionId,
-                    Question: message
+                    Question: message,
+                    userId: this.userId
                 })
             });
 
@@ -679,6 +702,7 @@ class SuperBizAgentApp {
             // 创建助手消息元素
             const assistantMessageElement = this.addMessage('assistant', '', true);
             let fullResponse = '';
+            const usageSummary = this.createUsageSummary();
 
             // 处理流式响应
             const reader = response.body.getReader();
@@ -755,6 +779,12 @@ class SuperBizAgentApp {
                                         console.log('[SSE调试] 收到done标记，流结束');
                                         this.handleStreamComplete(assistantMessageElement, fullResponse);
                                         return;
+                                    } else if (sseMessage.type === 'usage') {
+                                        this.addUsageCall(usageSummary, sseMessage.data);
+                                        this.renderUsagePanel(assistantMessageElement, usageSummary);
+                                    } else if (sseMessage.type === 'context_usage') {
+                                        usageSummary.contextUsage = this.parseJsonData(sseMessage.data);
+                                        this.renderUsagePanel(assistantMessageElement, usageSummary);
                                     } else if (sseMessage.type === 'error') {
                                         console.error('[SSE调试] 收到错误:', sseMessage.data);
                                         if (assistantMessageElement) {
@@ -1114,6 +1144,7 @@ class SuperBizAgentApp {
             }
 
             let fullResponse = '';
+            const usageSummary = this.createUsageSummary();
 
             // 处理 SSE 流式响应
             const reader = response.body.getReader();
@@ -1168,8 +1199,11 @@ class SuperBizAgentApp {
                                     for (const jsonStr of matches) {
                                         try {
                                             const sseMessage = JSON.parse(jsonStr);
-                                            if (sseMessage.type === 'content') {
+                                            if (sseMessage.type === 'content' || sseMessage.type === 'report') {
                                                 fullResponse += sseMessage.data || '';
+                                            } else if (sseMessage.type === 'usage') {
+                                                this.addUsageCall(usageSummary, sseMessage.data);
+                                                this.renderUsagePanel(loadingMessageElement, usageSummary);
                                             } else if (sseMessage.type === 'done') {
                                                 console.log('AI Ops 流完成，最终内容长度:', fullResponse.length);
                                                 this.updateAIOpsMessage(loadingMessageElement, fullResponse, []);
@@ -1198,11 +1232,14 @@ class SuperBizAgentApp {
                                 try {
                                     const sseMessage = JSON.parse(rawData);
                                     if (sseMessage && sseMessage.type) {
-                                        if (sseMessage.type === 'content') {
+                                        if (sseMessage.type === 'content' || sseMessage.type === 'report') {
                                             fullResponse += sseMessage.data || '';
                                             if (loadingMessageElement) {
                                                 this.updateAIOpsStreamContent(loadingMessageElement, fullResponse);
                                             }
+                                        } else if (sseMessage.type === 'usage') {
+                                            this.addUsageCall(usageSummary, sseMessage.data);
+                                            this.renderUsagePanel(loadingMessageElement, usageSummary);
                                         } else if (sseMessage.type === 'done') {
                                             console.log('AI Ops 流完成，最终内容长度:', fullResponse.length);
                                             this.updateAIOpsMessage(loadingMessageElement, fullResponse, []);
@@ -1255,6 +1292,64 @@ class SuperBizAgentApp {
             messageContent.textContent = content;
             this.scrollToBottom();
         }
+    }
+
+    createUsageSummary() {
+        return { inputTokens: 0, outputTokens: 0, totalTokens: 0, totalDurationMs: 0, calls: [], contextUsage: null };
+    }
+
+    parseJsonData(value) {
+        if (!value) return null;
+        if (typeof value !== 'string') return value;
+        try {
+            return JSON.parse(value);
+        } catch (error) {
+            console.warn('无法解析 JSON 事件:', value, error);
+            return null;
+        }
+    }
+
+    addUsageCall(summary, rawUsage) {
+        if (!summary || !rawUsage) return;
+        try {
+            const usage = typeof rawUsage === 'string' ? JSON.parse(rawUsage) : rawUsage;
+            summary.calls.push(usage);
+            summary.inputTokens += Number(usage.inputTokens || 0);
+            summary.outputTokens += Number(usage.outputTokens || 0);
+            summary.totalTokens += Number(usage.totalTokens || 0);
+            summary.totalDurationMs += Number(usage.durationMs || 0);
+        } catch (error) {
+            console.warn('无法解析 Usage 事件:', rawUsage, error);
+        }
+    }
+
+    renderUsagePanel(messageElement, summary) {
+        if (!messageElement || !summary) return;
+        const wrapper = messageElement.querySelector('.message-content-wrapper');
+        if (!wrapper) return;
+        let panel = wrapper.querySelector('.usage-panel');
+        if (!panel) {
+            panel = document.createElement('details');
+            panel.className = 'usage-panel';
+            wrapper.appendChild(panel);
+        }
+        const calls = Array.isArray(summary.calls) ? summary.calls : [];
+        const context = summary.contextUsage;
+        const breakdown = context && context.breakdown ? context.breakdown : {};
+        const contextHtml = context ? `
+            <div class="usage-overview">上下文估算 ${Number(context.estimatedInputTokens || 0).toLocaleString()} / ${Number(context.maxInputTokens || 0).toLocaleString()} Token</div>
+            <div class="usage-overview">最近对话 ${Number(context.includedMessagePairs || 0)} 轮 · 裁剪 ${Number(context.droppedMessagePairs || 0)} 轮 · 摘要 ${Number(breakdown.workingSummary || 0)} Token</div>` : '';
+        const stageNames = { ROUTER: '路由', SINGLE_AGENT: '单 Agent', PLANNER: '规划', REPORTER: '报告' };
+        const rows = calls.map((call, index) => `
+            <div class="usage-call">
+                <span>${stageNames[call.stage] || call.stage || '模型'}${call.round != null ? ` R${call.round}` : ''}</span>
+                <span>${Number(call.totalTokens || 0).toLocaleString()} Token · ${Number(call.durationMs || 0).toLocaleString()} ms · ${call.source || 'UNKNOWN'}</span>
+            </div>`).join('');
+        panel.innerHTML = `
+            <summary>用量：${Number(summary.totalTokens || 0).toLocaleString()} Token · ${Number(summary.totalDurationMs || 0).toLocaleString()} ms · ${calls.length} 次模型调用</summary>
+            <div class="usage-overview">输入 ${Number(summary.inputTokens || 0).toLocaleString()} / 输出 ${Number(summary.outputTokens || 0).toLocaleString()}</div>
+            ${contextHtml}
+            ${rows || '<div class="usage-overview">暂无调用明细</div>'}`;
     }
 
     // 更新智能运维消息（带折叠详情）

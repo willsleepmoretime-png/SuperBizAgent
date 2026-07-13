@@ -393,6 +393,36 @@ body {
     max-width: calc(100% - 44px);
 }
 
+.usage-panel {
+    margin-top: 10px;
+    padding: 8px 10px;
+    border: 1px solid #dfe3e8;
+    border-radius: 8px;
+    background: #f8fafc;
+    color: #52606d;
+    font-size: 12px;
+}
+
+.usage-panel summary {
+    cursor: pointer;
+    font-weight: 600;
+    color: #334e68;
+}
+
+.usage-overview {
+    margin-top: 8px;
+    color: #627d98;
+}
+
+.usage-call {
+    display: flex;
+    justify-content: space-between;
+    gap: 16px;
+    padding-top: 6px;
+    border-top: 1px dashed #d9e2ec;
+    margin-top: 6px;
+}
+
 /* 用户消息的包装器不需要限制宽度，让它根据内容自适应 */
 .message.user .message-content-wrapper {
     max-width: 70%;

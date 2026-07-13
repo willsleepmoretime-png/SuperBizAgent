@@ -1,4 +1,18 @@
 services:
+  redis:
+    container_name: superbizagent-redis
+    image: redis:7.2-alpine
+    command: ["redis-server", "--appendonly", "yes"]
+    ports:
+      - "6379:6379"
+    volumes:
+      - ${DOCKER_VOLUME_DIRECTORY:-.}/volumes/redis:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
   etcd:
     container_name: milvus-etcd
     image: quay.io/coreos/etcd:v3.5.18
@@ -57,6 +71,7 @@ services:
     depends_on:
       - "etcd"
       - "minio"
+
   # 这是新增的 Attu 服务哦！
 #  attu:
 #    container_name: milvus-attu

@@ -21,6 +21,16 @@ milvus:
 
 # Spring AI Alibaba DashScope 配置
 spring:
+  application:
+    name: callon
+  data:
+    redis:
+      host: ${REDIS_HOST:localhost}
+      port: ${REDIS_PORT:6379}
+      password: ${REDIS_PASSWORD:}
+      database: ${REDIS_DATABASE:0}
+      connect-timeout: 2s
+      timeout: 2s
   ai:
     dashscope:
       api-key: ${DASHSCOPE_API_KEY:}  # 从环境变量读取
@@ -74,6 +84,12 @@ rag:
     enabled: true
     model: "gte-rerank-v2"
     return-documents: true
+  eval:
+    # Ground Truth 使用的冻结语料目录；chunk 导出接口只读取该目录。
+    corpus-path: ./aiops-docs
+    runs-path: ./rag-eval-runs
+  prompt:
+    max-context-chars: 12000
 
 # Prometheus 配置
 prometheus:
@@ -81,12 +97,34 @@ prometheus:
   timeout: 10  # 超时时间（秒）
   mock-enabled: true # 是否启用 Mock 模式（用于测试）
 
-# 对话记忆配置
-chat:
-  memory:
-    max-window-size: 6  # 最近原文对话窗口，按“用户消息 + AI 回复”为一轮
-    summary-max-chars: 3000  # 滚动摘要最大字符数，超过后保留最近内容
+# Redis 短期对话记忆。Redis 故障时当前请求会降级为无历史对话模式。
+memory:
+  working:
+    key-prefix: memory:conversation:v1
+    max-window-pairs: 6
+    summary-max-chars: 3000
+    ttl: 7d
+  context:
+    max-input-tokens: 8000
+    reserve-output-tokens: 2000
+    system-prompt-tokens: 1000
+    working-memory-tokens: 1800
+    summary-tokens: 600
 
 # CLS 云日志服务配置 
 cls:
   mock-enabled: true  # 是否启用 Mock 模式（用于测试，设为 true 返回与告警关联的模拟日志数据）
+
+# 单 Agent 执行预算。路由分类、React 循环中的模型调用和全部工具调用共享同一请求预算。
+agent:
+  single:
+    max-tool-calls: 3
+    max-model-calls: 4
+    max-total-tokens: 12000
+  aiops:
+    max-rounds: 6
+    max-tool-calls: 8
+    max-model-calls: 10
+    max-total-tokens: 30000
+    report-token-reserve: 4000
+    tool-failure-limit: 3

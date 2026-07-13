@@ -1,136 +1,137 @@
 # SuperBizAgent
 
-SuperBizAgent 是一个基于 Spring Boot、Spring AI Alibaba、DashScope、Milvus 和 RAG 构建的企业级智能排障 Agent 项目。
+> 面向企业运维场景的智能排障 Agent，将告警、指标、日志与内部知识库连接成可执行、可追踪的故障分析流程。
 
-项目目标不是做一个简单聊天机器人，而是把企业运维排障中的 **告警查询、日志分析、内部知识库检索、根因分析、修复建议生成** 串联成一个可自动执行的 Agent 流程。
+SuperBizAgent 是一个基于 Spring Boot 与 Spring AI Alibaba 构建的 AIOps 智能体项目。它不只是回答运维问题，而是尝试复现工程师真实的排障过程：理解故障现象、制定调查计划、调用观测工具、检索内部文档、整理证据，并最终生成带有依据的故障分析报告。
 
-## 项目背景
+项目同时提供轻量的单 Agent 问答与面向复杂故障的多阶段工作流。系统会根据用户意图选择合适的执行模式，在响应速度、工具使用成本与分析深度之间取得平衡。
 
-传统监控系统通常只能告诉我们“哪里出问题了”，例如 CPU 使用率过高、JVM 内存异常、服务 P99 响应时间过长、接口 5xx 错误增多。但真正排障时，工程师还需要手动切换 Prometheus、日志平台和内部文档，结合经验判断根因。
+## 项目要解决的问题
 
-SuperBizAgent 尝试将这套流程 Agent 化，让系统能够自动完成：
+传统监控平台能够发现 CPU、内存、延迟或错误率异常，但从“发现告警”到“定位根因”通常仍需要工程师在监控、日志和内部文档之间反复切换。信息来源分散、调查步骤依赖个人经验，也让排障过程难以复用和审计。
+
+SuperBizAgent 将这一过程组织为统一链路：
 
 ```text
-告警理解 -> 知识库检索 -> 日志/指标查询 -> 根因分析 -> 修复建议 -> 告警分析报告
+用户问题 / 系统告警
+        ↓
+意图识别与执行模式路由
+        ↓
+任务规划 → 指标/日志查询 → 知识库检索 → 证据整理
+        ↓
+根因分析与修复建议
+        ↓
+结构化故障分析报告
 ```
 
 ## 核心能力
 
-- RAG 知识库问答：支持上传 Markdown / TXT 文档，自动分片、向量化并写入 Milvus。
-- 独立重排模型：Milvus 粗召回后接入 DashScope `gte-rerank-v2` 进行语义精排。
-- Rerank 失败兜底：重排模型不可用时，自动降级为本地轻量重排策略。
-- 多 Agent 排障：基于 Supervisor、Planner/Replanner、Executor 实现 Plan-Execute-Replan 闭环。
-- 工具调用：支持内部文档检索、Prometheus 告警查询、日志查询、时间工具等。
-- 工具 Router：根据用户意图只挂载相关工具，减少无效工具调用和 token 消耗。
-- 会话记忆：保留最近对话窗口，并对较早历史进行摘要压缩。
-- SSE 流式输出：普通问答和 AIOps 报告均支持流式返回。
-- RAG 调试接口：支持对比 baseline 向量检索与 query expansion + rerank 后的检索结果。
+- **智能路由**：区分普通对话、时间查询、知识库问答、可观测性查询和故障调查，只为当前任务加载必要工具。
+- **单 Agent 问答**：通过 ReAct 模式完成日常问答、文档检索和简单运维查询，支持普通响应与 SSE 流式输出。
+- **AIOps 调查工作流**：由 Planner、Tool Executor 和 Report Generator 分工协作，形成 Plan–Execute–Replan 闭环。
+- **证据驱动的报告生成**：工具返回结果会被转换为结构化 Evidence；最终结论基于已收集证据生成，并通过 Evidence ID 建立引用关系。
+- **RAG 知识库**：支持 Markdown、TXT 文档上传，自动完成结构感知分片、向量化、索引与检索。
+- **混合检索与重排**：结合 Milvus 稠密向量检索、BM25 稀疏检索及 DashScope `gte-rerank-v2` 语义重排，提高专业术语和故障场景下的召回质量。
+- **检索降级策略**：外部重排服务不可用时，可回退到本地轻量排序，避免整个问答链路中断。
+- **会话记忆与上下文控制**：使用 Redis 保存按用户、会话隔离的短期记忆，并通过摘要和 Token 预算控制上下文规模；Redis 故障时自动降级为无历史模式。
+- **预算与终止保护**：模型调用次数、工具调用次数、Token 总量、重复调用和连续失败均由 Java 代码约束，防止 Agent 无限制执行。
+- **RAG 评测能力**：内置检索评测用例与实验结果存储，可对 Dense、Hybrid、RRF 和 Rerank 等策略进行对比。
 
+## 系统架构
+
+```text
+┌────────────────────────────────────────────────────────────┐
+│                    Web UI / REST / SSE                     │
+└────────────────────────────┬───────────────────────────────┘
+                             │
+                    ┌────────▼────────┐
+                    │  Agent Router   │
+                    └───────┬─────────┘
+                            │
+              ┌─────────────┴─────────────┐
+              │                           │
+       ┌──────▼──────┐             ┌──────▼──────────┐
+       │ Single Agent │             │ AIOps Workflow │
+       │    ReAct     │             │ Plan / Execute │
+       └──────┬───────┘             │   / Replan     │
+              │                     └──────┬──────────┘
+              └─────────────┬──────────────┘
+                            │
+       ┌────────────────────┼─────────────────────┐
+       │                    │                     │
+┌──────▼──────┐      ┌──────▼──────┐      ┌──────▼──────┐
+│ RAG / Milvus │      │ Prometheus  │      │ Logs / CLS │
+│ BM25/Rerank  │      │ Metrics     │      │            │
+└─────────────┘      └─────────────┘      └─────────────┘
+                            │
+                     ┌──────▼──────┐
+                     │ Redis Memory │
+                     └─────────────┘
+```
+
+### 单 Agent 模式
+
+单 Agent 模式适合普通问答、时间查询、内部文档问答以及明确的指标或日志查询。Router 根据规则与模型分类结果确定意图和工具集合，使 Agent 只关注当前任务需要的能力，从而减少无效工具调用和上下文开销。
+
+### AIOps 工作流模式
+
+复杂故障调查由 Java 状态机统一编排：
+
+1. **PlannerService** 将用户问题转换为经过校验的 Typed Plan。
+2. **ToolExecutor** 按白名单执行调查步骤，并将结果写入 Typed Evidence。
+3. **AiOpsWorkflowEngine** 根据证据、失败次数和剩余预算决定继续执行、重新规划或结束任务。
+4. **ReportGenerator** 只读取工作流中已经收集的结构化证据，输出根因判断、证据摘要和修复建议。
+
+这种设计将“模型负责推理”和“代码负责控制”分离，提升流程的确定性、可观测性与安全性。
+
+## RAG 检索链路
+
+知识文档进入系统后，会优先按照 Markdown 标题和段落进行分片，并通过 overlap 保留相邻语义。分片由 DashScope `text-embedding-v4` 生成向量后写入 Milvus。
+
+查询阶段支持稠密向量与 BM25 混合召回，再通过 `gte-rerank-v2` 对候选内容进行语义精排，最终只将高相关片段送入模型上下文。项目还提供冻结语料、评测用例和实验记录，用于持续验证不同检索策略的效果。
 
 ## 技术栈
 
-| 模块 | 技术 |
+| 领域 | 技术 |
 | --- | --- |
 | 开发语言 | Java 17 |
-| 后端框架 | Spring Boot 3.2.0 |
+| Web 框架 | Spring Boot 3.2 |
 | Agent 框架 | Spring AI Alibaba Agent Framework |
 | 大模型服务 | Alibaba Cloud DashScope |
-| 向量化模型 | `text-embedding-v4` |
+| 对话模型 | Qwen |
+| 向量模型 | `text-embedding-v4` |
 | 重排模型 | `gte-rerank-v2` |
-| 向量数据库 | Milvus 2.6.10 |
-| 流式输出 | Server-Sent Events / `SseEmitter` |
+| 向量数据库 | Milvus |
+| 会话记忆 | Redis |
+| 可观测性数据 | Prometheus、日志 / CLS 工具 |
+| 流式通信 | Server-Sent Events（SSE） |
 | 构建工具 | Maven |
 
-## 核心模块
-
-
-
-## RAG 链路设计
-
-### 文档入库流程
+## 项目结构
 
 ```text
-上传 .txt / .md 文件
--> FileUploadController 保存文件
--> VectorIndexService 读取文件内容
--> DocumentChunkService 按 Markdown 标题和段落分片
--> VectorEmbeddingService 调用 DashScope text-embedding-v4
--> VectorIndexService 写入 Milvus
+SuperBizAgent/
+├── src/main/java/org/example/
+│   ├── agent/          # 路由、工具、预算控制与 AIOps 工作流
+│   ├── controller/     # 对话、文档上传、调试与评测接口
+│   ├── memory/         # Redis 工作记忆与上下文预算
+│   ├── service/        # RAG、向量检索、BM25、重排与评测服务
+│   └── config/         # Milvus、分片、RAG 等配置
+├── src/main/resources/
+│   ├── static/         # 项目 Web 界面
+│   └── application.yml # 应用配置
+├── aiops-docs/         # 示例运维知识库
+├── rag-eval-runs/      # RAG 实验结果
+├── vector-database.yml # Milvus、MinIO、etcd 与 Redis 编排
+└── README.md
 ```
 
-分片策略：
+## 当前定位
 
-- 优先按 Markdown 标题切分，保留文档结构。
-- 对长章节继续按段落切分，避免破坏语义。
-- 在 chunk 内容中补充标题上下文，例如 `标题: CPU 使用率过高排查`。
-- 使用 overlap 缓解跨 chunk 信息断裂。
+SuperBizAgent 目前是一个面向 AIOps、RAG 与 Agent 工程实践的完整原型。项目重点展示如何将大模型推理、受控工具调用、混合检索、短期记忆、执行预算和证据化报告组合成一条可运行的智能排障链路。
 
-### 检索流程
+Prometheus 与日志工具支持 Mock 模式，便于在没有真实企业监控环境的情况下演示和验证工作流；接入生产环境时，可替换为实际的指标、日志和内部知识平台。
 
-```text
-用户问题 / Agent 工具调用
--> 运维关键词 query expansion
--> Milvus 召回 candidate-k 个候选 chunk
--> DashScope gte-rerank-v2 语义重排
--> 取 top-k 个高相关 chunk
--> 返回给 Agent 生成最终回答
-```
+## License
 
-默认配置：
-
-```yaml
-rag:
-  top-k: 3
-  candidate-k: 24
-  max-distance: 0
-  rerank:
-    enabled: true
-    model: "gte-rerank-v2"
-    return-documents: true
-```
-
-如果 `gte-rerank-v2` 调用失败、超时或返回为空，系统会自动降级到本地轻量重排：
-
-```text
-rerankScore = vectorScore + contentHits * 0.08 + metadataHits * 0.15
-vectorScore = 1 / (1 + L2 distance)
-```
-
-## AIOps 多 Agent 设计
-
-AIOps 排障流程由 `AiOpsService` 负责，核心是三个角色：
-
-| Agent | 职责 |
-| --- | --- |
-| Supervisor Agent | 控制流程，决定调用 Planner、Executor 或结束 |
-| Planner / Replanner Agent | 拆解告警任务，根据执行反馈动态调整计划 |
-| Executor Agent | 执行 Planner 给出的第一步，调用工具并返回证据 |
-
-执行流程：
-
-```text
-POST /api/ai_ops
--> Supervisor 启动编排
--> Planner 分析告警并制定排障计划
--> Executor 执行第一步工具调用
--> Planner 根据工具结果重新规划
--> 多轮迭代直到 FINISH
--> 输出 Markdown 告警分析报告
-```
-
-为了减少 Agent 幻觉，Prompt 中明确要求所有结论必须基于工具返回结果。工具失败或返回空时，需要记录失败原因；同一方向连续失败时，必须停止并在最终报告中说明无法完成的原因，禁止编造未查询到的日志、指标或根因。
-
-## 工具 Router
-
-项目根据用户问题进行工具路由，避免所有问题都挂载全部工具。
-
-| 路由 | 场景 | 工具 |
-| --- | --- | --- |
-| `CHAT_ONLY` | 普通聊天 | 不挂载运维工具 |
-| `DATETIME` | 时间日期问题 | 时间工具 |
-| `DOCS_RAG` | 文档、流程、SOP、排障方案 | 内部文档工具 |
-| `OBSERVABILITY` | 告警、指标、日志 | Prometheus / 日志工具 |
-| `AIOPS_PARTIAL` | 文档 + 告警或日志 | 部分排障工具 |
-| `AIOPS_FULL` | 文档 + 指标 + 日志 | 完整排障工具 |
-
-这样可以减少无效工具调用，降低 token 消耗，并提升 Agent 执行稳定性。
+本项目采用 [Apache License 2.0](LICENSE) 开源许可证。

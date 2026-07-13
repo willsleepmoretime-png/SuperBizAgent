@@ -176,9 +176,13 @@ public class  VectorIndexService {
             // 将系统路径转换为统一格式
             Path path = Paths.get(filePath).normalize();
             String normalizedPath = path.toString().replace(File.separator, "/");
+            String fileName = path.getFileName() == null ? "" : path.getFileName().toString();
             
-            // 构建删除表达式：metadata["_source"] == "xxx"
-            String expr = String.format("metadata[\"_source\"] == \"%s\"", normalizedPath);
+            // 同一逻辑文档可能曾从 uploads 或 aiops-docs 等不同路径入库。
+            // 同时按 source 和规范化文件名删除，防止旧 UUID 分片污染评测结果。
+            String expr = String.format(
+                    "metadata[\"_source\"] == \"%s\" or metadata[\"_file_name\"] == \"%s\"",
+                    escapeMilvusString(normalizedPath), escapeMilvusString(fileName));
             
             logger.info("准备删除旧数据，路径: {}, 表达式: {}", normalizedPath, expr);
 
@@ -214,6 +218,10 @@ public class  VectorIndexService {
         }
     }
 
+    private String escapeMilvusString(String value) {
+        return value.replace("\\", "\\\\").replace("\"", "\\\"");
+    }
+
     /**
      * 构建元数据（包含文件信息）
      */
@@ -240,6 +248,10 @@ public class  VectorIndexService {
         // 分片信息
         metadata.put("chunkIndex", chunk.getChunkIndex());
         metadata.put("totalChunks", totalChunks);
+        metadata.put("chunkId", chunk.getChunkId());
+        metadata.put("documentId", chunk.getDocumentId());
+        metadata.put("titlePath", chunk.getTitlePath());
+        metadata.put("contentHash", chunk.getContentHash());
         
         // 标题信息
         if (chunk.getTitle() != null && !chunk.getTitle().isEmpty()) {
@@ -266,9 +278,9 @@ public class  VectorIndexService {
                 throw new RuntimeException("加载 collection 失败: " + loadResponse.getMessage());
             }
 
-            // 生成唯一 ID（使用 _source + 分片索引）
+            // Milvus 主键直接使用稳定 chunkId，使检索、导出与评测使用同一标识。
             String source = (String) metadata.get("_source");
-            String id = UUID.nameUUIDFromBytes((source + "_" + chunkIndex).getBytes()).toString();
+            String id = (String) metadata.get("chunkId");
 
             // 构建字段数据
             List<InsertParam.Field> fields = new ArrayList<>();

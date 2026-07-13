@@ -4,11 +4,14 @@ import org.example.config.DocumentChunkConfig;
 import org.example.dto.DocumentChunk;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Path;
+import java.nio.file.Paths;
+import java.security.MessageDigest;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -21,8 +24,11 @@ public class DocumentChunkService {
 
     private static final Logger logger = LoggerFactory.getLogger(DocumentChunkService.class);
 
-    @Autowired
-    private DocumentChunkConfig chunkConfig;
+    private final DocumentChunkConfig chunkConfig;
+
+    public DocumentChunkService(DocumentChunkConfig chunkConfig) {
+        this.chunkConfig = chunkConfig;
+    }
 
     /**
      * 智能分片文档
@@ -52,6 +58,11 @@ public class DocumentChunkService {
             globalChunkIndex += sectionChunks.size();
         }
 
+        String documentId = resolveDocumentId(filePath);
+        for (DocumentChunk chunk : chunks) {
+            populateStableIdentity(chunk, documentId);
+        }
+
         logger.info("文档分片完成: {} -> {} 个分片", filePath, chunks.size());
         return chunks;
     }
@@ -61,44 +72,58 @@ public class DocumentChunkService {
      */
     private List<Section> splitByHeadings(String content) {
         List<Section> sections = new ArrayList<>();
-        
-        // 匹配 Markdown 标题：# 标题, ## 标题, ### 标题等
-        //工具
-        Pattern headingPattern = Pattern.compile("^(#{1,6})\\s+(.+)$", Pattern.MULTILINE);
-        //将工具应用于实践中 实现器（按照工具的实现器）
-        Matcher matcher = headingPattern.matcher(content);
-
-        int lastEnd = 0;
+        Pattern headingPattern = Pattern.compile("^(#{1,6})\\s+(.+?)\\s*$");
+        List<String> headingStack = new ArrayList<>();
         String currentTitle = null;
+        String currentTitlePath = "";
+        StringBuilder sectionContent = new StringBuilder();
+        int sectionStart = 0;
+        int offset = 0;
+        boolean inFence = false;
 
-        while (matcher.find()) {
-            // 保存上一个章节
-            if (lastEnd < matcher.start()) {
-                String sectionContent = content.substring(lastEnd, matcher.start()).trim();
-                if (!sectionContent.isEmpty()) {
-                    sections.add(new Section(currentTitle, sectionContent, lastEnd));
+        for (String lineWithEnding : content.split("(?<=\\n)", -1)) {
+            String line = lineWithEnding.replaceFirst("[\\r\\n]+$", "");
+            String trimmed = line.trim();
+            if (trimmed.startsWith("```") || trimmed.startsWith("~~~")) {
+                inFence = !inFence;
+                sectionContent.append(lineWithEnding);
+                offset += lineWithEnding.length();
+                continue;
+            }
+
+            Matcher heading = headingPattern.matcher(line);
+            if (!inFence && heading.matches()) {
+                addSectionIfPresent(sections, currentTitle, currentTitlePath, sectionContent, sectionStart);
+                int level = heading.group(1).length();
+                while (headingStack.size() >= level) {
+                    headingStack.remove(headingStack.size() - 1);
                 }
+                currentTitle = heading.group(2).trim();
+                headingStack.add(currentTitle);
+                currentTitlePath = String.join("/", headingStack);
+                sectionContent = new StringBuilder();
+                sectionStart = offset + lineWithEnding.length();
+            } else {
+                sectionContent.append(lineWithEnding);
             }
-
-            // 更新当前标题
-            currentTitle = matcher.group(2).trim();
-            lastEnd = matcher.start();
+            offset += lineWithEnding.length();
         }
-
-        // 添加最后一个章节
-        if (lastEnd < content.length()) {
-            String sectionContent = content.substring(lastEnd).trim();
-            if (!sectionContent.isEmpty()) {
-                sections.add(new Section(currentTitle, sectionContent, lastEnd));
-            }
-        }
+        addSectionIfPresent(sections, currentTitle, currentTitlePath, sectionContent, sectionStart);
 
         // 如果没有找到任何标题，将整个文档作为一个章节
         if (sections.isEmpty()) {
-            sections.add(new Section(null, content, 0));
+            sections.add(new Section(null, "", content, 0));
         }
 
         return sections;
+    }
+
+    private void addSectionIfPresent(List<Section> sections, String title, String titlePath,
+                                     StringBuilder rawContent, int startIndex) {
+        String sectionContent = rawContent.toString().trim();
+        if (!sectionContent.isEmpty()) {
+            sections.add(new Section(title, titlePath, sectionContent, startIndex));
+        }
     }
 
     /**
@@ -120,6 +145,7 @@ public class DocumentChunkService {
                 startChunkIndex
             );
             chunk.setTitle(title);
+            chunk.setTitlePath(section.titlePath);
             chunks.add(chunk);
             return chunks;
         }
@@ -146,6 +172,7 @@ public class DocumentChunkService {
                     chunkIndex++
                 );
                 chunk.setTitle(title);
+                chunk.setTitlePath(section.titlePath);
                 chunks.add(chunk);
 
                 // 开始新分片，包含重叠部分
@@ -167,6 +194,7 @@ public class DocumentChunkService {
                 chunkIndex
             );
             chunk.setTitle(title);
+            chunk.setTitlePath(section.titlePath);
             chunks.add(chunk);
         }
 
@@ -178,6 +206,39 @@ public class DocumentChunkService {
             return content;
         }
         return "标题: " + title.trim() + "\n\n" + content;
+    }
+
+    private void populateStableIdentity(DocumentChunk chunk, String documentId) {
+        String normalizedContent = chunk.getContent() == null
+                ? ""
+                : chunk.getContent().replaceAll("\\s+", " ").trim();
+        String contentHash = sha256Prefix(normalizedContent, 12);
+        String titlePath = chunk.getTitlePath() == null ? "" : chunk.getTitlePath().trim();
+        chunk.setDocumentId(documentId);
+        chunk.setContentHash(contentHash);
+        chunk.setChunkId(documentId + "::" + titlePath + "::" + contentHash);
+    }
+
+    private String resolveDocumentId(String filePath) {
+        if (filePath == null || filePath.isBlank()) {
+            return "unknown-document";
+        }
+        Path fileName = Paths.get(filePath).normalize().getFileName();
+        return fileName == null ? filePath.replace('\\', '/') : fileName.toString();
+    }
+
+    private String sha256Prefix(String value, int length) {
+        try {
+            byte[] digest = MessageDigest.getInstance("SHA-256")
+                    .digest(value.getBytes(StandardCharsets.UTF_8));
+            StringBuilder hex = new StringBuilder(digest.length * 2);
+            for (byte item : digest) {
+                hex.append(String.format("%02x", item));
+            }
+            return hex.substring(0, Math.min(length, hex.length()));
+        } catch (Exception e) {
+            throw new IllegalStateException("生成 chunk 内容哈希失败", e);
+        }
     }
 
     /**
@@ -229,11 +290,13 @@ public class DocumentChunkService {
      */
     private static class Section {
         String title;
+        String titlePath;
         String content;
         int startIndex;
 
-        Section(String title, String content, int startIndex) {
+        Section(String title, String titlePath, String content, int startIndex) {
             this.title = title;
+            this.titlePath = titlePath;
             this.content = content;
             this.startIndex = startIndex;
         }
