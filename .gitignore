@@ -57,7 +57,7 @@ uploads/
 ### Temp Scripts ###
 *.sh
 *.py
-
+!.env.example
 ### docker
 /volumes
 /server.pid
